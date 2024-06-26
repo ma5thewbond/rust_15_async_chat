@@ -1,0 +1,13 @@
+[package]
+name = "rust_15_async_chat"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.86"
+serde = "1.0.203"
+serde_cbor = "0.11.2"
+serde_derive = "1.0.203"
+tokio = { version = "1.38.0", features = ["full"] }
