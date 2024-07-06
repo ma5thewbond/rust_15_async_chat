@@ -1,7 +1,7 @@
-use std::{io::Error, path::Path};
-
 use anyhow::{Context, Result};
-use async_chat_msg::AsyncChatMsg;
+use async_chat_msg::{AsyncChatMsg, AsyncChatMsgDB};
+use nanodb::nanodb::NanoDB;
+use std::{io::Error, path::Path};
 use tokio::{
     fs::{self, File},
     io::AsyncReadExt,
@@ -48,5 +48,18 @@ pub async fn ensure_folder(path: &str) -> Result<()> {
         )));
     }
 
+    Ok(())
+}
+
+pub async fn save_msg_to_db(timestamp: String, msg: AsyncChatMsgDB, mut db: NanoDB) -> Result<()> {
+    let from = match msg.clone() {
+        AsyncChatMsgDB::Text(from, _) => from,
+        AsyncChatMsgDB::Image(from, _) => from,
+        AsyncChatMsgDB::File(from, _) => from,
+    };
+    db.insert(&(timestamp + "|" + &from), msg).await?;
+    if let Err(e) = db.write().await {
+        eprintln!("Saving db to file failed with error {e}");
+    }
     Ok(())
 }

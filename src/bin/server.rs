@@ -1,6 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
+use nanodb::nanodb::NanoDB;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{broadcast, RwLock},
@@ -17,10 +18,13 @@ async fn main() -> Result<()> {
 
     println!("AsyncChatServer is running");
 
-    let clients: Arc<RwLock<HashMap<SocketAddr, String>>> = Arc::new(RwLock::new(HashMap::new()));
+    let clients: Arc<RwLock<HashMap<String, SocketAddr>>> = Arc::new(RwLock::new(HashMap::new()));
 
     let (br_send, _br_recv) = broadcast::channel(1024);
     let mut waiting = true;
+    let db = NanoDB::open("msgsdb.json")
+        .unwrap_or_else(|e| panic!("Opening db file msgsdb.json failed {}", e));
+
     loop {
         let Ok((stream, addr)) = server.accept().await else {
             eprintln!("couldn't get client");
@@ -45,23 +49,92 @@ async fn main() -> Result<()> {
             eprintln!("Name from the client not received");
             continue;
         };
+
+        if clients.read().await.contains_key(&name) {
+            let name_used_msg = AsyncChatMsg::create_text(
+                "Server".into(),
+                format!("ERROR: Name {name} is already used, please choose another"),
+            )
+            .unwrap();
+            if let Err(e) = name_used_msg.send(&mut stream_writer).await {
+                eprintln!("Sending existing name warning failed with error {e}");
+            }
+            continue;
+        } else {
+            let welcome_msg = AsyncChatMsg::create_text(
+                "Server".into(),
+                format!("{name}, welcome on the AsyncChatServer!"),
+            )
+            .unwrap();
+            if let Err(e) = welcome_msg.send(&mut stream_writer).await {
+                eprintln!("Sending welcome message failed with error {e}");
+            }
+        }
+
         println!("User {name} has connected");
 
-        clients.write().await.insert(addr, name.clone());
+        // _ = sender.send((
+        //     AsyncChatMsg::create_text("Server".to_string(), format!("User {name} has connected"))
+        //         .unwrap(),
+        //     SocketAddr::from_str(&format!("127.0.0.1:{PORT}")).unwrap(),
+        // ));
+
+        clients.write().await.insert(name.clone(), addr);
         let clients_copy = clients.clone();
 
-        tokio::spawn(async move {
-            loop {
-                match AsyncChatMsg::receive(&mut stream_reader).await {
-                    Ok(ref msg @ AsyncChatMsg::Text(ref _from, ref text)) => {
-                        println!("{msg}");
-                        if text == ".quit" {
-                            // send quit message with disconnect info for everyone
+        tokio::spawn({
+            let db = db.clone();
+            async move {
+                loop {
+                    match AsyncChatMsg::receive(&mut stream_reader).await {
+                        Ok(ref msg @ AsyncChatMsg::Text(ref _from, ref text)) => {
+                            println!("{msg}");
+                            if text == ".quit" {
+                                // send quit message with disconnect info for everyone
+                                if sender.send((msg.clone(), addr)).is_err() {
+                                    eprintln!("Sending message to broadcast failed");
+                                }
+                                // if last client disconnected, then send quit ping to self to break the loops
+                                clients_copy.write().await.remove_entry(&name);
+                                if clients_copy.read().await.len() == 0 {
+                                    let _ = send_quit_ping() //sender, &addr, name
+                                        .await
+                                        .with_context(|| "Sending disconnect message failed (1)");
+                                }
+                                if let Err(e) = msg.save_to_db(db.clone()).await {
+                                    eprintln!("Saving msg to db failed with error: {e}");
+                                }
+                                break;
+                            }
                             if sender.send((msg.clone(), addr)).is_err() {
                                 eprintln!("Sending message to broadcast failed");
                             }
-                            // if last client disconnected, then send quit ping to self to break the loops
-                            clients_copy.write().await.remove_entry(&addr);
+                            if let Err(e) = msg.save_to_db(db.clone()).await {
+                                eprintln!("Saving msg to db failed with error: {e}");
+                            }
+                        }
+                        Ok(ref msg @ AsyncChatMsg::Image(ref _from, ref _text, ref _data)) => {
+                            println!("{msg}");
+                            if sender.send((msg.clone(), addr)).is_err() {
+                                eprintln!("Sending message to broadcast failed");
+                            }
+                            if let Err(e) = msg.save_to_db(db.clone()).await {
+                                eprintln!("Saving msg to db failed with error: {e}");
+                            }
+                        }
+                        Ok(ref msg @ AsyncChatMsg::File(ref _from, ref _text, ref _data)) => {
+                            println!("{msg}");
+                            if sender.send((msg.clone(), addr)).is_err() {
+                                eprintln!("Sending message to broadcast failed");
+                            }
+                            if let Err(e) = msg.save_to_db(db.clone()).await {
+                                eprintln!("Saving msg to db failed with error: {e}");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("error receiving message from client: {e}");
+                            //let name = clients_copy.read().await.get(&addr).unwrap().clone();
+                            clients_copy.write().await.remove_entry(&name);
                             if clients_copy.read().await.len() == 0 {
                                 let _ = send_quit_ping() //sender, &addr, name
                                     .await
@@ -69,34 +142,8 @@ async fn main() -> Result<()> {
                             }
                             break;
                         }
-                        if sender.send((msg.clone(), addr)).is_err() {
-                            eprintln!("Sending message to broadcast failed");
-                        }
-                    }
-                    Ok(ref msg @ AsyncChatMsg::Image(ref _from, ref _text, ref _data)) => {
-                        println!("{msg}");
-                        if sender.send((msg.clone(), addr)).is_err() {
-                            eprintln!("Sending message to broadcast failed");
-                        }
-                    }
-                    Ok(ref msg @ AsyncChatMsg::File(ref _from, ref _text, ref _data)) => {
-                        println!("{msg}");
-                        if sender.send((msg.clone(), addr)).is_err() {
-                            eprintln!("Sending message to broadcast failed");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("error receiving message from client: {e}");
-                        //let name = clients_copy.read().await.get(&addr).unwrap().clone();
-                        clients_copy.write().await.remove_entry(&addr);
-                        if clients_copy.read().await.len() == 0 {
-                            let _ = send_quit_ping() //sender, &addr, name
-                                .await
-                                .with_context(|| "Sending disconnect message failed (1)");
-                        }
-                        break;
-                    }
-                };
+                    };
+                }
             }
         });
 
@@ -144,6 +191,8 @@ async fn main() -> Result<()> {
             }
         });
     }
+
+    //tokio::join!(_client_handle, _broadcast_handle); //(client_handle, broadcast_handle);
 
     return Ok(());
 }

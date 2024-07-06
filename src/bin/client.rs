@@ -28,19 +28,36 @@ async fn main() -> Result<()> {
 
     let (mut reader, mut writer) = stream.into_split();
 
-    let Ok(Some(name)) = lines.next_line().await else {
-        eprintln!("Getting user name failed, quit");
-        exit(0);
+    let name = loop {
+        let Ok(Some(name)) = lines.next_line().await else {
+            eprintln!("Getting user name failed, quit");
+            exit(0);
+        };
+
+        if name.trim().len() != 0 {
+            break name;
+        } else {
+            println!("Name cannot be empty! Try again");
+        }
     };
 
     // send name
-    if AsyncChatMsg::Text(name.clone(), "Connected, hi".to_string())
+    if AsyncChatMsg::Text(name.trim().to_string(), "Connected, hi".to_string())
         .send(&mut writer)
         .await
         .is_err()
     {
         eprintln!("Introducing to server failed");
         exit(0);
+    }
+
+    if let Ok(server_msg) = AsyncChatMsg::receive(&mut reader).await {
+        println!("{server_msg}");
+        if let AsyncChatMsg::Text(_from, msg) = server_msg {
+            if msg.starts_with("ERROR") {
+                return Ok(());
+            }
+        }
     }
 
     let write_task = tokio::spawn(async move {
