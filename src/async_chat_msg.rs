@@ -13,6 +13,7 @@ pub enum AsyncChatMsg {
     Text(String, String),           // from, message
     File(String, String, Vec<u8>),  // from, filename, file data
     Image(String, String, Vec<u8>), // from, filename, file data
+    Login(String, String),
 }
 
 use crate::AsyncChatMsg::{File as AsyncMsgFile, Image as AsyncMsgImage};
@@ -78,6 +79,15 @@ impl AsyncChatMsg {
         return Ok(msg);
     }
 
+    pub async fn login<T: AsyncWriteExt + Unpin>(
+        login: String,
+        password: String,
+        stream: &mut T,
+    ) -> Result<()> {
+        let m = AsyncChatMsg::Login(login, password);
+        m.send(stream).await
+    }
+
     pub async fn store_file(&self) -> Result<()> {
         let (filename, data, path) = match self {
             AsyncMsgImage(_u, filename, data) => {
@@ -119,6 +129,7 @@ impl AsyncChatMsg {
             AsyncChatMsg::File(from, filename, _) => {
                 AsyncChatMsgDB::File(from.to_string(), filename.to_string())
             }
+            _ => return Ok(()), // do not save Login or other types to db
         };
         let timestamp: DateTime<Local> = Local::now();
         save_msg_to_db(
@@ -148,6 +159,7 @@ impl fmt::Display for AsyncChatMsg {
             AsyncChatMsg::Image(from, text, data) => {
                 format!("{}: incomming image {} ({}B)", from, text, data.len())
             }
+            AsyncChatMsg::Login(login, _password) => format!("{login}: ********* (you didn't really think that I would print password here, did you?"),
         };
         write!(f, "{}", printable)
     }

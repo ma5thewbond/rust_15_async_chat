@@ -7,8 +7,8 @@ use tokio::{
     sync::{broadcast, RwLock},
 };
 
-use rust_15_async_chat::async_chat_msg::AsyncChatMsg;
 use rust_15_async_chat::PORT;
+use rust_15_async_chat::{async_chat_msg::AsyncChatMsg, validate_user_in_db};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,10 +22,13 @@ async fn main() -> Result<()> {
 
     let (br_send, _br_recv) = broadcast::channel(1024);
     let mut waiting = true;
-    let db = NanoDB::open("msgsdb.json")
-        .unwrap_or_else(|e| panic!("Opening db file msgsdb.json failed {}", e));
+    let chat_db = NanoDB::open("chatdb.json")
+        .unwrap_or_else(|e| panic!("Opening db file chatdb.json failed {}", e));
+    let users_db = NanoDB::open("userdb.json")
+        .unwrap_or_else(|e| panic!("Opening db file userdb.json failed {}", e));
 
-    loop {
+    // handle client
+    'client: loop {
         let Ok((stream, addr)) = server.accept().await else {
             eprintln!("couldn't get client");
             continue;
@@ -43,34 +46,56 @@ async fn main() -> Result<()> {
 
         let (mut stream_reader, mut stream_writer) = stream.into_split();
 
-        let Ok(AsyncChatMsg::Text(name, _connected_msg)) =
-            AsyncChatMsg::receive(&mut stream_reader).await
-        else {
-            eprintln!("Name from the client not received");
-            continue;
+        // validate user login, if failed, try again
+        let name = loop {
+            let Ok(AsyncChatMsg::Login(name, password)) =
+                AsyncChatMsg::receive(&mut stream_reader).await
+            else {
+                eprintln!("Login from the client not received");
+                continue 'client;
+            };
+
+            match validate_user_in_db(&name, &password, users_db.clone()).await {
+                Ok(false) => {
+                    let wrong_pass_msg = AsyncChatMsg::create_text(
+                        "Server".into(),
+                        format!("ERROR: Incorrect password for login {name}"),
+                    )
+                    .unwrap();
+                    if let Err(e) = wrong_pass_msg.send(&mut stream_writer).await {
+                        eprintln!("Sending wrong password failed with error {e}");
+                    }
+                    continue;
+                }
+                Ok(true) => (),
+                Err(error) => {
+                    eprintln!("Validation of user {name} failed with error: {error}");
+                    continue;
+                }
+            }
+
+            if clients.read().await.contains_key(&name) {
+                let name_used_msg = AsyncChatMsg::create_text(
+                    "Server".into(),
+                    format!("ERROR: User {name} is already logged in, please choose another or disconnect from existing session"),
+                )
+                .unwrap();
+                if let Err(e) = name_used_msg.send(&mut stream_writer).await {
+                    eprintln!("Sending existing name warning failed with error {e}");
+                }
+                continue;
+            } else {
+                let welcome_msg = AsyncChatMsg::create_text(
+                    "Server".into(),
+                    format!("{name}, welcome on the AsyncChatServer!"),
+                )
+                .unwrap();
+                if let Err(e) = welcome_msg.send(&mut stream_writer).await {
+                    eprintln!("Sending welcome message failed with error {e}");
+                }
+                break name;
+            }
         };
-
-        if clients.read().await.contains_key(&name) {
-            let name_used_msg = AsyncChatMsg::create_text(
-                "Server".into(),
-                format!("ERROR: Name {name} is already used, please choose another"),
-            )
-            .unwrap();
-            if let Err(e) = name_used_msg.send(&mut stream_writer).await {
-                eprintln!("Sending existing name warning failed with error {e}");
-            }
-            continue;
-        } else {
-            let welcome_msg = AsyncChatMsg::create_text(
-                "Server".into(),
-                format!("{name}, welcome on the AsyncChatServer!"),
-            )
-            .unwrap();
-            if let Err(e) = welcome_msg.send(&mut stream_writer).await {
-                eprintln!("Sending welcome message failed with error {e}");
-            }
-        }
-
         println!("User {name} has connected");
 
         // _ = sender.send((
@@ -83,17 +108,14 @@ async fn main() -> Result<()> {
         let clients_copy = clients.clone();
 
         tokio::spawn({
-            let db = db.clone();
+            let db = chat_db.clone();
             async move {
                 loop {
-                    match AsyncChatMsg::receive(&mut stream_reader).await {
+                    let message = AsyncChatMsg::receive(&mut stream_reader).await;
+                    match message {
                         Ok(ref msg @ AsyncChatMsg::Text(ref _from, ref text)) => {
                             println!("{msg}");
                             if text == ".quit" {
-                                // send quit message with disconnect info for everyone
-                                if sender.send((msg.clone(), addr)).is_err() {
-                                    eprintln!("Sending message to broadcast failed");
-                                }
                                 // if last client disconnected, then send quit ping to self to break the loops
                                 clients_copy.write().await.remove_entry(&name);
                                 if clients_copy.read().await.len() == 0 {
@@ -101,35 +123,14 @@ async fn main() -> Result<()> {
                                         .await
                                         .with_context(|| "Sending disconnect message failed (1)");
                                 }
-                                if let Err(e) = msg.save_to_db(db.clone()).await {
-                                    eprintln!("Saving msg to db failed with error: {e}");
-                                }
                                 break;
-                            }
-                            if sender.send((msg.clone(), addr)).is_err() {
-                                eprintln!("Sending message to broadcast failed");
-                            }
-                            if let Err(e) = msg.save_to_db(db.clone()).await {
-                                eprintln!("Saving msg to db failed with error: {e}");
                             }
                         }
                         Ok(ref msg @ AsyncChatMsg::Image(ref _from, ref _text, ref _data)) => {
                             println!("{msg}");
-                            if sender.send((msg.clone(), addr)).is_err() {
-                                eprintln!("Sending message to broadcast failed");
-                            }
-                            if let Err(e) = msg.save_to_db(db.clone()).await {
-                                eprintln!("Saving msg to db failed with error: {e}");
-                            }
                         }
                         Ok(ref msg @ AsyncChatMsg::File(ref _from, ref _text, ref _data)) => {
                             println!("{msg}");
-                            if sender.send((msg.clone(), addr)).is_err() {
-                                eprintln!("Sending message to broadcast failed");
-                            }
-                            if let Err(e) = msg.save_to_db(db.clone()).await {
-                                eprintln!("Saving msg to db failed with error: {e}");
-                            }
                         }
                         Err(e) => {
                             eprintln!("error receiving message from client: {e}");
@@ -142,7 +143,16 @@ async fn main() -> Result<()> {
                             }
                             break;
                         }
+                        _ => (),
                     };
+                    let message = message.unwrap();
+                    // send quit message with disconnect info for everyone
+                    if sender.send((message.clone(), addr)).is_err() {
+                        eprintln!("Sending message to broadcast failed");
+                    }
+                    if let Err(e) = message.save_to_db(db.clone()).await {
+                        eprintln!("Saving msg to db failed with error: {e}");
+                    }
                 }
             }
         });

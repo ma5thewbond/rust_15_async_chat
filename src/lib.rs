@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_chat_msg::{AsyncChatMsg, AsyncChatMsgDB};
-use nanodb::nanodb::NanoDB;
+use nanodb::{error::NanoDBError, nanodb::NanoDB};
 use std::{io::Error, path::Path};
 use tokio::{
     fs::{self, File},
@@ -62,4 +62,36 @@ pub async fn save_msg_to_db(timestamp: String, msg: AsyncChatMsgDB, mut db: Nano
         eprintln!("Saving db to file failed with error {e}");
     }
     Ok(())
+}
+
+pub async fn validate_user_in_db(login: &str, password: &str, mut db: NanoDB) -> Result<bool> {
+    let pass = get_password_for_user(login, &db).await;
+    match pass {
+        Ok(pass) => {
+            println!("Password for user {login} in db is '{password}'");
+            if pass != password {
+                // TODO md5
+                return Ok(false);
+            }
+            return Ok(true);
+        }
+        Err(NanoDBError::KeyNotFound(error)) => {
+            eprintln!("Error getting password for user {login} from db, key not found: {error}");
+            // this is new user, so save him and return true
+            db.insert(login, password).await?;
+            if let Err(e) = db.write().await {
+                eprintln!("Saving db to file failed with error {e}");
+            }
+            return Ok(true);
+        }
+        Err(error) => {
+            eprintln!("Error getting password for user {login} from db: {error}");
+            return Ok(false);
+        }
+    }
+}
+
+pub async fn get_password_for_user(login: &str, db: &NanoDB) -> Result<String, NanoDBError> {
+    let pass = db.data().await.get(&login)?.into()?;
+    return Ok(pass);
 }

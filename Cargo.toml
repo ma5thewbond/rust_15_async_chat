@@ -12,4 +12,5 @@ nanodb = "0.4.5"
 serde = "1.0.203"
 serde_cbor = "0.11.2"
 serde_derive = "1.0.203"
+thiserror = "1.0.62"
 tokio = { version = "1.38.0", features = ["full"] }
