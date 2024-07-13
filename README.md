@@ -9,3 +9,6 @@ AsyncChatDB is simplified object without data for image and file messages, so on
 When client starts, user is asked for name. There are two validations on name:
 1. Name cannot be empty string (used trim().len() != 0 for validation), if empty name provided, user is repeatedly promted to enter new one until the name is not empty
 2. Name cannot be same as other user already in the chat, in this case client is shut down and has to be started again.
+
+to run tests in /tests folder execute
+> cargo test
