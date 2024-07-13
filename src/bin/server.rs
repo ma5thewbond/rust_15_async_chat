@@ -123,7 +123,6 @@ async fn main() -> Result<()> {
                                         .await
                                         .with_context(|| "Sending disconnect message failed (1)");
                                 }
-                                break;
                             }
                         }
                         Ok(ref msg @ AsyncChatMsg::Image(ref _from, ref _text, ref _data)) => {
@@ -152,6 +151,9 @@ async fn main() -> Result<()> {
                     }
                     if let Err(e) = message.save_to_db(db.clone()).await {
                         eprintln!("Saving msg to db failed with error: {e}");
+                    }
+                    if message.get_text() == ".quit" {
+                        break;
                     }
                 }
             }

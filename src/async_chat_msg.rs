@@ -13,7 +13,7 @@ pub enum AsyncChatMsg {
     Text(String, String),           // from, message
     File(String, String, Vec<u8>),  // from, filename, file data
     Image(String, String, Vec<u8>), // from, filename, file data
-    Login(String, String),
+    Login(String, String),          // login, password
 }
 
 use crate::AsyncChatMsg::{File as AsyncMsgFile, Image as AsyncMsgImage};
@@ -139,6 +139,16 @@ impl AsyncChatMsg {
         )
         .await?;
         Ok(())
+    }
+
+    pub fn get_text(&self) -> &str {
+        let text = match self {
+            AsyncChatMsg::Text(_, msg) => msg,
+            AsyncChatMsg::Image(_, filename, _) => filename,
+            AsyncChatMsg::File(_, filename, _) => filename,
+            AsyncChatMsg::Login(login, _) => login,
+        };
+        return text;
     }
 }
 
