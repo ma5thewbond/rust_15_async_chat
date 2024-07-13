@@ -1,3 +1,5 @@
+//! Client binary for connecting to server part
+#![warn(missing_docs)]
 use std::{
     process::exit,
     sync::atomic::{AtomicBool, Ordering},

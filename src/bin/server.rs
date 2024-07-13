@@ -1,3 +1,5 @@
+//! Server binary to host the clients
+#![warn(missing_docs)]
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
@@ -55,6 +57,7 @@ async fn main() -> Result<()> {
                 continue 'client;
             };
 
+            // validate password against DB
             match validate_user_in_db(&name, &password, users_db.clone()).await {
                 Ok(false) => {
                     let wrong_pass_msg = AsyncChatMsg::create_text(
@@ -74,6 +77,7 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // check for duplicity name of user
             if clients.read().await.contains_key(&name) {
                 let name_used_msg = AsyncChatMsg::create_text(
                     "Server".into(),
